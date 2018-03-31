@@ -1,5 +1,6 @@
 package org.junit.runners;
 
+import java.lang.annotation.Annotation;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Inherited;
 import java.lang.annotation.Retention;
@@ -8,11 +9,17 @@ import java.lang.annotation.Target;
 import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 
+import org.junit.internal.AssumptionViolatedException;
+import org.junit.runner.Description;
 import org.junit.runner.Runner;
+import org.junit.runner.notification.Failure;
+import org.junit.runner.notification.RunNotifier;
 import org.junit.runners.model.FrameworkMethod;
+import org.junit.runners.model.InvalidTestClassError;
 import org.junit.runners.model.TestClass;
 import org.junit.runners.parameterized.BlockJUnit4ClassRunnerWithParametersFactory;
 import org.junit.runners.parameterized.ParametersRunnerFactory;
@@ -23,34 +30,37 @@ import org.junit.runners.parameterized.TestWithParameters;
  * When running a parameterized test class, instances are created for the
  * cross-product of the test methods and the test data elements.
  * <p>
- * For example, to test a Fibonacci function, write:
+ * For example, to test the <code>+</code> operator, write:
  * <pre>
  * &#064;RunWith(Parameterized.class)
- * public class FibonacciTest {
- *     &#064;Parameters(name= &quot;{index}: fib[{0}]={1}&quot;)
+ * public class AdditionTest {
+ *     &#064;Parameters(name = &quot;{index}: {0} + {1} = {2}&quot;)
  *     public static Iterable&lt;Object[]&gt; data() {
- *         return Arrays.asList(new Object[][] { { 0, 0 }, { 1, 1 }, { 2, 1 },
- *                 { 3, 2 }, { 4, 3 }, { 5, 5 }, { 6, 8 } });
+ *         return Arrays.asList(new Object[][] { { 0, 0, 0 }, { 1, 1, 2 },
+ *                 { 3, 2, 5 }, { 4, 3, 7 } });
  *     }
  *
- *     private int fInput;
+ *     private int firstSummand;
  *
- *     private int fExpected;
+ *     private int secondSummand;
  *
- *     public FibonacciTest(int input, int expected) {
- *         fInput= input;
- *         fExpected= expected;
+ *     private int sum;
+ *
+ *     public AdditionTest(int firstSummand, int secondSummand, int sum) {
+ *         this.firstSummand = firstSummand;
+ *         this.secondSummand = secondSummand;
+ *         this.sum = sum;
  *     }
  *
  *     &#064;Test
  *     public void test() {
- *         assertEquals(fExpected, Fibonacci.compute(fInput));
+ *         assertEquals(sum, firstSummand + secondSummand);
  *     }
  * }
  * </pre>
  * <p>
- * Each instance of <code>FibonacciTest</code> will be constructed using the
- * two-argument constructor and the data values in the
+ * Each instance of <code>AdditionTest</code> will be constructed using the
+ * three-argument constructor and the data values in the
  * <code>&#064;Parameters</code> method.
  * <p>
  * In order that you can easily identify the individual tests, you may provide a
@@ -68,33 +78,36 @@ import org.junit.runners.parameterized.TestWithParameters;
  * </dl>
  * <p>
  * In the example given above, the <code>Parameterized</code> runner creates
- * names like <code>[1: fib(3)=2]</code>. If you don't use the name parameter,
+ * names like <code>[2: 3 + 2 = 5]</code>. If you don't use the name parameter,
  * then the current parameter index is used as name.
  * <p>
  * You can also write:
  * <pre>
  * &#064;RunWith(Parameterized.class)
- * public class FibonacciTest {
- *  &#064;Parameters
- *  public static Iterable&lt;Object[]&gt; data() {
- *      return Arrays.asList(new Object[][] { { 0, 0 }, { 1, 1 }, { 2, 1 },
- *                 { 3, 2 }, { 4, 3 }, { 5, 5 }, { 6, 8 } });
- *  }
- *  
- *  &#064;Parameter(0)
- *  public int fInput;
+ * public class AdditionTest {
+ *     &#064;Parameters(name = &quot;{index}: {0} + {1} = {2}&quot;)
+ *     public static Iterable&lt;Object[]&gt; data() {
+ *         return Arrays.asList(new Object[][] { { 0, 0, 0 }, { 1, 1, 2 },
+ *                 { 3, 2, 5 }, { 4, 3, 7 } });
+ *     }
  *
- *  &#064;Parameter(1)
- *  public int fExpected;
+ *     &#064;Parameter(0)
+ *     public int firstSummand;
  *
- *  &#064;Test
- *  public void test() {
- *      assertEquals(fExpected, Fibonacci.compute(fInput));
- *  }
+ *     &#064;Parameter(1)
+ *     public int secondSummand;
+ *
+ *     &#064;Parameter(2)
+ *     public int sum;
+ *
+ *     &#064;Test
+ *     public void test() {
+ *         assertEquals(sum, firstSummand + secondSummand);
+ *     }
  * }
  * </pre>
  * <p>
- * Each instance of <code>FibonacciTest</code> will be constructed with the default constructor
+ * Each instance of <code>AdditionTest</code> will be constructed with the default constructor
  * and fields annotated by <code>&#064;Parameter</code>  will be initialized
  * with the data values in the <code>&#064;Parameters</code> method.
  *
@@ -104,8 +117,7 @@ import org.junit.runners.parameterized.TestWithParameters;
  * <pre>
  * &#064;Parameters
  * public static Object[][] data() {
- * 	return new Object[][] { { 0, 0 }, { 1, 1 }, { 2, 1 }, { 3, 2 }, { 4, 3 },
- * 			{ 5, 5 }, { 6, 8 } };
+ * 	return new Object[][] { { 0, 0, 0 }, { 1, 1, 2 }, { 3, 2, 5 }, { 4, 3, 7 } } };
  * }
  * </pre>
  * 
@@ -126,6 +138,19 @@ import org.junit.runners.parameterized.TestWithParameters;
  * &#064;Parameters
  * public static Object[] data() {
  * 	return new Object[] { &quot;first test&quot;, &quot;second test&quot; };
+ * }
+ * </pre>
+ *
+ * <h3>Executing code before/after executing tests for specific parameters</h3>
+ * <p>
+ * If your test needs to perform some preparation or cleanup based on the
+ * parameters, this can be done by adding public static methods annotated with
+ * {@code @BeforeParam}/{@code @AfterParam}. Such methods should either have no
+ * parameters or the same parameters as the test.
+ * <pre>
+ * &#064;BeforeParam
+ * public static void beforeTestsForParameter(String onlyParameter) {
+ *     System.out.println("Testing " + onlyParameter);
  * }
  * </pre>
  *
@@ -169,7 +194,7 @@ public class Parameterized extends Suite {
      */
     @Retention(RetentionPolicy.RUNTIME)
     @Target(ElementType.METHOD)
-    public static @interface Parameters {
+    public @interface Parameters {
         /**
          * Optional pattern to derive the test's name from the parameters. Use
          * numbers in braces to refer to the parameters or the additional data
@@ -200,7 +225,7 @@ public class Parameterized extends Suite {
      */
     @Retention(RetentionPolicy.RUNTIME)
     @Target(ElementType.FIELD)
-    public static @interface Parameter {
+    public @interface Parameter {
         /**
          * Method that returns the index of the parameter in the array
          * returned by the method annotated by <code>Parameters</code>.
@@ -230,31 +255,126 @@ public class Parameterized extends Suite {
     }
 
     /**
+     * Annotation for {@code public static void} methods which should be executed before
+     * evaluating tests with particular parameters.
+     *
+     * @see org.junit.BeforeClass
+     * @see org.junit.Before
+     * @since 4.13
+     */
+    @Retention(RetentionPolicy.RUNTIME)
+    @Target(ElementType.METHOD)
+    public @interface BeforeParam {
+    }
+
+    /**
+     * Annotation for {@code public static void} methods which should be executed after
+     * evaluating tests with particular parameters.
+     *
+     * @see org.junit.AfterClass
+     * @see org.junit.After
+     * @since 4.13
+     */
+    @Retention(RetentionPolicy.RUNTIME)
+    @Target(ElementType.METHOD)
+    public @interface AfterParam {
+    }
+
+    /**
      * Only called reflectively. Do not use programmatically.
      */
     public Parameterized(Class<?> klass) throws Throwable {
-        super(klass, RunnersFactory.createRunnersForClass(klass));
+        this(klass, new RunnersFactory(klass));
+    }
+
+    private Parameterized(Class<?> klass, RunnersFactory runnersFactory) throws Exception {
+        super(klass, runnersFactory.createRunners());
+        validateBeforeParamAndAfterParamMethods(runnersFactory.parameterCount);
+    }
+
+    private void validateBeforeParamAndAfterParamMethods(Integer parameterCount)
+            throws InvalidTestClassError {
+        List<Throwable> errors = new ArrayList<Throwable>();
+        validatePublicStaticVoidMethods(Parameterized.BeforeParam.class, parameterCount, errors);
+        validatePublicStaticVoidMethods(Parameterized.AfterParam.class, parameterCount, errors);
+        if (!errors.isEmpty()) {
+            throw new InvalidTestClassError(getTestClass().getJavaClass(), errors);
+        }
+    }
+
+    private void validatePublicStaticVoidMethods(
+            Class<? extends Annotation> annotation, Integer parameterCount,
+            List<Throwable> errors) {
+        List<FrameworkMethod> methods = getTestClass().getAnnotatedMethods(annotation);
+        for (FrameworkMethod fm : methods) {
+            fm.validatePublicVoid(true, errors);
+            if (parameterCount != null) {
+                int methodParameterCount = fm.getMethod().getParameterTypes().length;
+                if (methodParameterCount != 0 && methodParameterCount != parameterCount) {
+                    errors.add(new Exception("Method " + fm.getName()
+                            + "() should have 0 or " + parameterCount + " parameter(s)"));
+                }
+            }
+        }
+    }
+
+    private static class AssumptionViolationRunner extends Runner {
+        private final Description description;
+        private final AssumptionViolatedException exception;
+
+        AssumptionViolationRunner(TestClass testClass, String methodName,
+                AssumptionViolatedException exception) {
+            this.description = Description
+                    .createTestDescription(testClass.getJavaClass(),
+                            methodName + "() assumption violation");
+            this.exception = exception;
+        }
+
+        @Override
+        public Description getDescription() {
+            return description;
+        }
+
+        @Override
+        public void run(RunNotifier notifier) {
+            notifier.fireTestAssumptionFailed(new Failure(description, exception));
+        }
     }
 
     private static class RunnersFactory {
         private static final ParametersRunnerFactory DEFAULT_FACTORY = new BlockJUnit4ClassRunnerWithParametersFactory();
 
         private final TestClass testClass;
+        private final FrameworkMethod parametersMethod;
+        private final List<Object> allParameters;
+        private final int parameterCount;
+        private final Runner runnerOverride;
 
-        static List<Runner> createRunnersForClass(Class<?> klass)
-                throws Throwable {
-            return new RunnersFactory(klass).createRunners();
-        }
-
-        private RunnersFactory(Class<?> klass) {
+        private RunnersFactory(Class<?> klass) throws Throwable {
             testClass = new TestClass(klass);
+            parametersMethod = getParametersMethod(testClass);
+            List<Object> allParametersResult;
+            AssumptionViolationRunner assumptionViolationRunner = null;
+            try {
+                allParametersResult = allParameters(testClass, parametersMethod);
+            } catch (AssumptionViolatedException e) {
+                allParametersResult = Collections.emptyList();
+                assumptionViolationRunner = new AssumptionViolationRunner(testClass,
+                        parametersMethod.getName(), e);
+            }
+            allParameters = allParametersResult;
+            runnerOverride = assumptionViolationRunner;
+            parameterCount =
+                    allParameters.isEmpty() ? 0 : normalizeParameters(allParameters.get(0)).length;
         }
 
-        private List<Runner> createRunners() throws Throwable {
-            Parameters parameters = getParametersMethod().getAnnotation(
-                    Parameters.class);
+        private List<Runner> createRunners() throws Exception {
+            if (runnerOverride != null) {
+                return Collections.singletonList(runnerOverride);
+            }
+            Parameters parameters = parametersMethod.getAnnotation(Parameters.class);
             return Collections.unmodifiableList(createRunnersForParameters(
-                    allParameters(), parameters.name(),
+                    allParameters, parameters.name(),
                     getParametersRunnerFactory()));
         }
 
@@ -273,25 +393,37 @@ public class Parameterized extends Suite {
 
         private TestWithParameters createTestWithNotNormalizedParameters(
                 String pattern, int index, Object parametersOrSingleParameter) {
-            Object[] parameters = (parametersOrSingleParameter instanceof Object[]) ? (Object[]) parametersOrSingleParameter
+            Object[] parameters = normalizeParameters(parametersOrSingleParameter);
+            return createTestWithParameters(testClass, pattern, index, parameters);
+        }
+
+        private static Object[] normalizeParameters(Object parametersOrSingleParameter) {
+            return (parametersOrSingleParameter instanceof Object[]) ? (Object[]) parametersOrSingleParameter
                     : new Object[] { parametersOrSingleParameter };
-            return createTestWithParameters(testClass, pattern, index,
-                    parameters);
         }
 
         @SuppressWarnings("unchecked")
-        private Iterable<Object> allParameters() throws Throwable {
-            Object parameters = getParametersMethod().invokeExplosively(null);
-            if (parameters instanceof Iterable) {
-                return (Iterable<Object>) parameters;
+        private static List<Object> allParameters(
+                TestClass testClass, FrameworkMethod parametersMethod) throws Throwable {
+            Object parameters = parametersMethod.invokeExplosively(null);
+            if (parameters instanceof List) {
+                return (List<Object>) parameters;
+            } else if (parameters instanceof Collection) {
+                return new ArrayList<Object>((Collection<Object>) parameters);
+            } else if (parameters instanceof Iterable) {
+                List<Object> result = new ArrayList<Object>();
+                for (Object entry : ((Iterable<Object>) parameters)) {
+                    result.add(entry);
+                }
+                return result;
             } else if (parameters instanceof Object[]) {
                 return Arrays.asList((Object[]) parameters);
             } else {
-                throw parametersMethodReturnedWrongType();
+                throw parametersMethodReturnedWrongType(testClass, parametersMethod);
             }
         }
 
-        private FrameworkMethod getParametersMethod() throws Exception {
+        private static FrameworkMethod getParametersMethod(TestClass testClass) throws Exception {
             List<FrameworkMethod> methods = testClass
                     .getAnnotatedMethods(Parameters.class);
             for (FrameworkMethod each : methods) {
@@ -317,7 +449,7 @@ public class Parameterized extends Suite {
                 }
                 return runners;
             } catch (ClassCastException e) {
-                throw parametersMethodReturnedWrongType();
+                throw parametersMethodReturnedWrongType(testClass, parametersMethod);
             }
         }
 
@@ -333,9 +465,10 @@ public class Parameterized extends Suite {
             return children;
         }
 
-        private Exception parametersMethodReturnedWrongType() throws Exception {
+        private static Exception parametersMethodReturnedWrongType(
+                TestClass testClass, FrameworkMethod parametersMethod) throws Exception {
             String className = testClass.getName();
-            String methodName = getParametersMethod().getName();
+            String methodName = parametersMethod.getName();
             String message = MessageFormat.format(
                     "{0}.{1}() must return an Iterable of arrays.", className,
                     methodName);
